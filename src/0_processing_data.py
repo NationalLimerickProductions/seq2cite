@@ -2,6 +2,9 @@
 Assembling a parsed dataset of citation spans from the CORD-19 data
 """
 import csv
+import multiprocessing as mp
+from collections import namedtuple
+from typing import Union
 
 from tqdm import tqdm
 import pandas as pd
@@ -10,7 +13,7 @@ import numpy as np
 from seq2cite import config, utils, aws, text
 
 
-CHUNK_SIZE = 1024
+CHUNK_SIZE = 16
 # Number of sentences at or before the inline citation to include as context
 CONTEXT_SIZE = 1
 ARTICLES_FILE = config.raw / 'cord19_articles.csv'
@@ -31,6 +34,35 @@ def load_metadata(offset=0,
                      header=header)
     df = df[~pd.isna(df['sha'])]
     return df
+
+
+def worker(row: namedtuple) -> Union[tuple, None]:
+
+    cord_uid = row['cord_uid']
+
+    sha = row['sha'].split('; ')[0]
+    title = row['title']
+    date = row['publish_time']
+    doi = row['doi']
+    authors = row['authors'].split('; ')
+    journal = row['journal']
+    subset = row['full_text_file']
+
+    jsondict = aws.read_item(subset, sha)
+    if jsondict is None:
+        return None
+    context_citations = get_citation_data(cord_uid, jsondict)
+
+    article_info = (cord_uid, title, authors, date, journal, doi)
+    return article_info, context_citations
+
+
+def process_chunk_mp(chunk: pd.DataFrame) -> list:
+    print(f'Multiprocessing with {mp.cpu_count()} workers...')
+    data = chunk.to_dict('records')
+    with mp.Pool(mp.cpu_count()) as pool:
+        results = pool.map(worker, data)
+    return results
 
 
 def process_chunk(chunk: pd.DataFrame) -> tuple:
@@ -69,21 +101,23 @@ def process_chunk(chunk: pd.DataFrame) -> tuple:
     with tqdm(total=len(chunk)) as pbar:
         for row in chunk.itertuples():
             cord_uid = row.cord_uid
-            sha = row.sha
+
+            shas = row.sha.split('; ')
             title = row.title
-            date = row.year
+            date = row.publish_time
             doi = row.doi
             authors = row.authors.split('; ')
             journal = row.journal
             subset = row.full_text_file
 
-            jsondict = aws.read_item(subset, sha)
-            if jsondict is None:
-                continue
-            context_citations = get_citation_data(jsondict)
+            for sha in shas:
+                jsondict = aws.read_item(subset, sha)
+                if jsondict is None:
+                    continue
+                context_citations = get_citation_data(cord_uid, jsondict)
 
-            articles.append((cord_uid, title, authors, date, journal, doi))
-            citation_data.append(context_citations)
+                articles.append((cord_uid, title, authors, date, journal, doi))
+                citation_data.append(context_citations)
 
             pbar.update()
 
@@ -102,16 +136,19 @@ def get_citation_data(cord_uid: str, article: dict) -> list:
     bib_entries = article['bib_entries']
     body_text = article['body_text']
     citation_data = []
-
-    for section in body_text:
+    text_sections = [section['text'] for section in body_text]
+    text_sections = list(text.nlp.pipe(text_sections))
+    for section, text_section in zip(body_text, text_sections):
         cite_spans = section['cite_spans']
-        sents = text.get_sentences(section['text'])
+        sents = list(text_section.sents)
         sent_ends = np.array([sent.end_char for sent in sents])
 
         # Need to loop through the citation spans and get the `CONTEXT_SIZE`
         # sentences before or including the citation span
         for cite_span in cite_spans:
             ref_id = cite_span['ref_id']
+            if not ref_id:
+                continue
             bibref = bib_entries[ref_id]
             target = (
                 bibref['title'],
@@ -120,17 +157,17 @@ def get_citation_data(cord_uid: str, article: dict) -> list:
                 bibref['venue']
             )
 
-            cite_end = bibref['end']
+            cite_end = cite_span['end']
             end_sent = np.searchsorted(sent_ends, cite_end, side='left')
             start_sent = max(end_sent - CONTEXT_SIZE, 0)
             context_sents = sents[start_sent:end_sent + 1]
 
             # Masking citations
-            inline_text = bibref['text']
+            inline_text = cite_span['text']
             context = ' '.join([text.mask_span(sent.text, inline_text, mask='<CITE>') for sent in context_sents])
 
             # Packaging it all together
-            datum = (cord_uid, context, target)
+            datum = (cord_uid, context) + target
             citation_data.append(datum)
 
     return citation_data
@@ -150,12 +187,21 @@ def main():
     citations_writer.writerow(CITATIONS_NAMES)
 
     # Main loop to process in chunks
+    print("Beginning processing")
     while True:
         metadata_chunk = load_metadata(offset, CHUNK_SIZE)
         if len(metadata_chunk) == 0:
             break
 
-        articles, citation_data = process_chunk(metadata_chunk)
+        all_data = process_chunk_mp(metadata_chunk)
+
+        articles = []
+        citation_data = []
+        for elem in all_data:
+            if elem is None:
+                continue
+            articles.append(elem[0])
+            citation_data.append(elem[1])
 
         articles_writer.writerows(articles)
         citations_writer.writerows(citation_data)
@@ -168,6 +214,7 @@ def main():
     print(f"Done. Processed {total} total articles.")
     fp_articles.close()
     fp_citations.close()
+
 
 if __name__ == '__main__':
     main()

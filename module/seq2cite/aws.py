@@ -1,8 +1,10 @@
 import json
+from typing import Union
 
 import requests
 import pandas as pd
 import boto3
+from botocore.exceptions import ClientError
 
 from . import config, utils
 
@@ -24,7 +26,7 @@ def get_cord19_bucket(s3=None, s3_resource=None):
     return s3_resource.Bucket(config.cord19_aws_bucket)
 
 
-def read_item(subset: str, id_: str, date='2020-04-17', s3=None) -> dict:
+def read_item(subset: str, id_: str, date='2020-04-17', s3=None) -> Union[dict, None]:
     """Read a single article in JSON format
 
     :param subset: The collection the article belongs to
@@ -44,3 +46,8 @@ def read_item(subset: str, id_: str, date='2020-04-17', s3=None) -> dict:
     except json.JSONDecodeError:
         print(f"Error parsing file {key}")
         return None
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            print(f'No such key: {key}')
+        else:
+            raise

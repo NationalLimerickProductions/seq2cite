@@ -29,9 +29,9 @@ def time_func(func):
     :return: callable
     """
     def f(*args, **kwargs):
-        start = time.time()
+        start = time()
         res = func(*args, **kwargs)
-        end = time.time()
+        end = time()
         print(f'Time elapsed: {end - start} seconds.')
         return res
     return f

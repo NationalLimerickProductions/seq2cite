@@ -7,8 +7,9 @@ import re
 import scispacy
 import spacy
 
-
-nlp = spacy.load("en_core_sci_lg", disable=['ner'])
+spacy_model = "en_core_sci_sm"
+nlp = spacy.load(spacy_model, disable=['tagger', 'ner'])
+print(f"Loaded spaCy model {spacy_model}")
 
 
 def get_sentences(text: str) -> list:
