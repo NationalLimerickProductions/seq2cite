@@ -13,7 +13,7 @@ import numpy as np
 from seq2cite import config, utils, aws, text
 
 
-CHUNK_SIZE = 16
+CHUNK_SIZE = 256
 # Number of sentences at or before the inline citation to include as context
 CONTEXT_SIZE = 1
 ARTICLES_FILE = config.raw / 'cord19_articles.csv'
@@ -21,18 +21,23 @@ CITATIONS_FILE = config.raw / 'cord19_context_citations.csv'
 
 ARTICLES_NAMES = ['cord_uid', 'title', 'authors', 'date', 'journal', 'doi']
 CITATIONS_NAMES = ['cord_uid', 'context', 'cited_title', 'cited_authors', 'cited_date', 'cited_journal']
+MIN_DATE = pd.to_datetime('2005-01-01')
 
 
 def load_metadata(offset=0,
                   chunk_size=CHUNK_SIZE,
-                  colnames=config.metadata_columns) -> pd.DataFrame:
+                  colnames=config.metadata_columns
+                  ) -> Union[pd.DataFrame, None]:
     header = None if colnames is None else 0
     df = pd.read_csv(f's3://{config.cord19_aws_bucket}/2020-04-10/metadata.csv',
                      nrows=chunk_size,
                      skiprows=offset,
                      names=colnames,
                      header=header)
+    if len(df) == 0:
+        return None
     df = df[~pd.isna(df['sha'])]
+    df = df[pd.to_datetime(df['publish_time']) > MIN_DATE]
     return df
 
 
@@ -44,7 +49,10 @@ def worker(row: namedtuple) -> Union[tuple, None]:
     title = row['title']
     date = row['publish_time']
     doi = row['doi']
-    authors = row['authors'].split('; ')
+    try:
+        authors = row['authors'].split('; ')
+    except AttributeError:
+        authors = [row['authors']]
     journal = row['journal']
     subset = row['full_text_file']
 
@@ -58,10 +66,11 @@ def worker(row: namedtuple) -> Union[tuple, None]:
 
 
 def process_chunk_mp(chunk: pd.DataFrame) -> list:
-    print(f'Multiprocessing with {mp.cpu_count()} workers...')
+    print(f'Multiprocessing {len(chunk)} records with {mp.cpu_count()} workers...')
     data = chunk.to_dict('records')
     with mp.Pool(mp.cpu_count()) as pool:
         results = pool.map(worker, data)
+
     return results
 
 
@@ -150,13 +159,14 @@ def get_citation_data(cord_uid: str, article: dict) -> list:
             if not ref_id:
                 continue
             bibref = bib_entries[ref_id]
-            target = (
+            target = [
                 bibref['title'],
                 bibref['authors'],
                 bibref['year'],
                 bibref['venue']
-            )
+            ]
 
+            # Finding the sentences at or before the inline citation
             cite_end = cite_span['end']
             end_sent = np.searchsorted(sent_ends, cite_end, side='left')
             start_sent = max(end_sent - CONTEXT_SIZE, 0)
@@ -167,7 +177,8 @@ def get_citation_data(cord_uid: str, article: dict) -> list:
             context = ' '.join([text.mask_span(sent.text, inline_text, mask='<CITE>') for sent in context_sents])
 
             # Packaging it all together
-            datum = (cord_uid, context) + target
+            datum = [cord_uid, context] + target
+            datum = tuple(datum)
             citation_data.append(datum)
 
     return citation_data
@@ -177,6 +188,7 @@ def get_citation_data(cord_uid: str, article: dict) -> list:
 def main():
     offset = 0
     total = 0
+    chunk_idx = -1
     fp_articles = ARTICLES_FILE.open('w')
     fp_citations = CITATIONS_FILE.open('w')
 
@@ -190,8 +202,13 @@ def main():
     print("Beginning processing")
     while True:
         metadata_chunk = load_metadata(offset, CHUNK_SIZE)
-        if len(metadata_chunk) == 0:
+        chunk_idx += 1
+        if metadata_chunk is None:
             break
+        if len(metadata_chunk) == 0:
+            print(f'Skipping chunk {chunk_idx} with length 0')
+            continue
+        print(f'Processing chunk {chunk_idx}')
 
         all_data = process_chunk_mp(metadata_chunk)
 
@@ -201,7 +218,7 @@ def main():
             if elem is None:
                 continue
             articles.append(elem[0])
-            citation_data.append(elem[1])
+            citation_data.extend(elem[1])
 
         articles_writer.writerows(articles)
         citations_writer.writerows(citation_data)
