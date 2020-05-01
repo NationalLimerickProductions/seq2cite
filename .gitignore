@@ -134,3 +134,10 @@ dmypy.json
 # Jetbrains
 .idea/
 .idea
+
+# Specific folders
+data/
+
+# API Keys and credentials
+CREDENTIALS
+credentials.yml
