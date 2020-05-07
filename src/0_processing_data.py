@@ -8,10 +8,13 @@ import multiprocessing as mp
 from collections import namedtuple
 from typing import Union
 import pickle
+import tarfile
+from io import BytesIO
 
 from tqdm import tqdm
 import pandas as pd
 import numpy as np
+import boto3
 
 from seq2cite import config, utils, aws, text
 
@@ -48,6 +51,32 @@ def load_metadata(offset=0,
     df = df[~pd.isna(df['sha'])]
     df = df[pd.to_datetime(df['publish_time']) > MIN_DATE]
     return df
+
+
+def load_tar_files():
+    s3 = boto3.client('s3')
+    keys = ['2020-04-10/noncomm_use_subset',
+            '2020-04-17/biorxiv_medrxiv.tar.gz',
+            '2020-04-10/custom_license.tar.gz',
+            '2020-04-10/comm_use_subset.tar.gz']
+    res = {}
+    for key in keys:
+        print(f'Loading {key}')
+        keyfile = f'{key}.tar.gz'
+        result = aws.get_object(keyfile, s3=s3)
+        content = tarfile.open(fileobj=BytesIO(result['Body'].read()), mode="r:gz")
+        members = content.getmembers()
+        member_dict = {m.name.split('/')[-1].rstrip('.json'): m for m in members}
+        res[key] = {}
+        res[key]['tarfile'] = content
+        res[key]['members'] = member_dict
+    return res
+
+
+def get_tarfile(tarfiles, subset, sha):
+    content = tarfiles[subset]['tarfile']
+    member = tarfiles[subset][sha]
+    return json.load(content.extractfile(member))
 
 
 def worker(row: namedtuple, author_vocab) -> Union[tuple, None]:
@@ -102,7 +131,7 @@ def process_chunk_mp(chunk: pd.DataFrame) -> list:
     return results
 
 
-def process_chunk(chunk: pd.DataFrame) -> tuple:
+def process_chunk(chunk: pd.DataFrame, tarfiles: dict) -> tuple:
     """Steps in processing a chunk
 
     1. For each article:
@@ -148,7 +177,7 @@ def process_chunk(chunk: pd.DataFrame) -> tuple:
             journal = row.journal
             subset = row.full_text_file
 
-            jsondict = aws.read_item(subset, sha)
+            jsondict = get_tarfile(tarfiles, subset, sha)
             if jsondict is None:
                 continue
             authors = jsondict['metadata'].get('authors')
@@ -264,6 +293,8 @@ def main():
     citations_writer.writerow(CITATIONS_NAMES)
 
     # Main loop to process in chunks
+    print("Loading TAR files")
+    tarfiles = load_tar_files()
     print("Beginning processing")
     try:
         while True:
@@ -276,7 +307,7 @@ def main():
                 continue
             print(f'Processing chunk {chunk_idx}')
 
-            all_data = process_chunk(metadata_chunk)
+            all_data = process_chunk(metadata_chunk, tarfiles)
             articles, citation_data = all_data
 
             # all_data = process_chunk_mp(metadata_chunk)

@@ -26,6 +26,12 @@ def get_cord19_bucket(s3=None, s3_resource=None):
     return s3_resource.Bucket(config.cord19_aws_bucket)
 
 
+def get_object(key, s3=None):
+    if s3 is None:
+        s3 = boto3.client('s3')
+    return s3.get_object(Bucket=config.cord19_aws_bucket, Key=key)
+
+
 def read_item(subset: str, id_: str, date='2020-04-17', s3=None) -> Union[dict, None]:
     """Read a single article in JSON format
 
