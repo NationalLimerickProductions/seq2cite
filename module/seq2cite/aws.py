@@ -6,7 +6,7 @@ import pandas as pd
 import boto3
 from botocore.exceptions import ClientError
 
-from . import config, utils
+from . import config
 
 
 def connect_aws_s3():

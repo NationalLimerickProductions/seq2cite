@@ -8,7 +8,7 @@ import scispacy
 import spacy
 
 spacy_model = "en_core_sci_sm"
-nlp = spacy.load(spacy_model, disable=['tagger', 'ner'])
+nlp = spacy.load(spacy_model, disable=['tagger', 'parser', 'ner'])
 print(f"Loaded spaCy model {spacy_model}")
 
 
