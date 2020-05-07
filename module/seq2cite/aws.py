@@ -4,7 +4,7 @@ from typing import Union
 import requests
 import pandas as pd
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ReadTimeoutError
 
 from . import config
 
@@ -51,3 +51,6 @@ def read_item(subset: str, id_: str, date='2020-04-17', s3=None) -> Union[dict, 
             print(f'No such key: {key}')
         else:
             raise
+    except ReadTimeoutError:
+        print(f'Error reading file {key}')
+        return None

@@ -2,6 +2,8 @@
 Assembling a parsed dataset of citation spans from the CORD-19 data
 """
 import csv
+import json
+import sys
 import multiprocessing as mp
 from collections import namedtuple
 from typing import Union
@@ -19,16 +21,17 @@ CHUNK_SIZE = 256
 CONTEXT_SIZE = 30
 ARTICLES_FILE = config.raw / 'cord19_articles.csv'
 CITATIONS_FILE = config.raw / 'cord19_context_citations.csv'
-AUTHOR_VOCAB_FILE = config.raw / 'cord19_author_vocab.pkl'
+AUTHOR_VOCAB_FILE = config.raw / 'cord19_author_vocab.json'
 CITE_TOKEN = '<CITE>'
 CITE_IDX = text.nlp.vocab.strings[CITE_TOKEN]
 ARTICLES_NAMES = ['cord_uid', 'title', 'authors', 'date', 'journal', 'doi']
 CITATIONS_NAMES = ['citation_id', 'context', 'auth_idxs', 'citing_auth_idxs', 'title_idxs']
-MIN_DATE = pd.to_datetime('2005-01-01')
+MIN_DATE = pd.to_datetime('2010-01-01')
 
 
-author_vocab = mp.Manager().dict()
-# author_vocab = dict()
+# author_vocab = mp.Manager().dict()
+# chunk_info = mp.Manager().list([0, 0])
+author_vocab = dict()
 
 def load_metadata(offset=0,
                   chunk_size=CHUNK_SIZE,
@@ -47,9 +50,7 @@ def load_metadata(offset=0,
     return df
 
 
-def worker(row: namedtuple) -> Union[tuple, None]:
-    global author_vocab
-
+def worker(row: namedtuple, author_vocab) -> Union[tuple, None]:
     cord_uid = row['cord_uid']
 
     sha = row['sha'].split('; ')[0]
@@ -63,19 +64,40 @@ def worker(row: namedtuple) -> Union[tuple, None]:
     if jsondict is None:
         return
     authors = jsondict['metadata'].get('authors')
-    auth_idxs = get_author_idxs(authors)
+    auth_idxs = get_author_idxs(authors, author_vocab)
     context_citations = get_citation_data(cord_uid, jsondict, auth_idxs)
 
     article_data = (cord_uid, title, auth_idxs, date, journal, doi)
+
+    # chunk_processed[0] = chunk_processed[0] + 1
+    # sys.stdout.write(r'Articles processed: {}/{}'.format(chunk_info[0], chunk_info[1]))
+    # sys.stdout.flush()
 
     return article_data, context_citations
 
 
 def process_chunk_mp(chunk: pd.DataFrame) -> list:
+    global chunk_info
+
+    chunk_info[0] = 0
+    chunk_info[1] = len(chunk)
+
     print(f'Multiprocessing {len(chunk)} records with {mp.cpu_count()} workers...')
     data = chunk.to_dict('records')
-    with mp.Pool(mp.cpu_count()) as pool:
-        results = pool.map(worker, data)
+    results = []
+
+    def collect_result(result):
+        sys.stdout.write(r'Articles processed: {}/{}'.format(chunk_info[0], chunk_info[1]))
+        sys.stdout.flush()
+        results.append(result)
+
+    # with mp.Pool(mp.cpu_count()) as pool:
+    pool = mp.Pool(mp.cpu_count())
+    for datum in data:
+        pool.apply_async(worker, args=(datum, author_vocab), callback=collect_result)
+
+    pool.close()
+    pool.join()
 
     return results
 
@@ -111,32 +133,30 @@ def process_chunk(chunk: pd.DataFrame) -> tuple:
     :param chunk: Chunk of the metadata
     :return: 'articles', 'citation_data'
     """
+    global author_vocab
+
     articles = []
     citation_data = []
     with tqdm(total=len(chunk)) as pbar:
         for row in chunk.itertuples():
-            cord_uid = row['cord_uid']
+            cord_uid = row.cord_uid
 
-            shas = row.sha.split('; ')
-            title = row['title']
-            date = row['publish_time']
-            doi = row['doi']
-            journal = row['journal']
-            subset = row['full_text_file']
+            sha = row.sha.split('; ')[0]
+            title = row.title
+            date = row.publish_time
+            doi = row.doi
+            journal = row.journal
+            subset = row.full_text_file
 
-            for sha in shas:
-                jsondict = aws.read_item(subset, sha)
-                if jsondict is None:
-                    continue
-                authors = jsondict['metadata'].get('authors')
-                auth_idxs = get_author_idxs(authors)
-                context_citations = get_citation_data(cord_uid, jsondict, auth_idxs)
+            jsondict = aws.read_item(subset, sha)
+            if jsondict is None:
+                continue
+            authors = jsondict['metadata'].get('authors')
+            auth_idxs = get_author_idxs(authors)
+            context_citations = get_citation_data(cord_uid, jsondict, auth_idxs)
 
-                articles.append((cord_uid, title, auth_idxs, date, journal, doi))
-                citation_data.extend(context_citations)
-
-                # Just using the first sha
-                break
+            articles.append((cord_uid, title, auth_idxs, date, journal, doi))
+            citation_data.extend(context_citations)
 
             pbar.update()
 
@@ -229,7 +249,8 @@ def get_citation_data(cord_uid: str, article: dict, citing_auth_idxs: list) -> l
 
 @utils.time_func
 def main():
-    offset = 0
+    # Good headstart to get to 2010
+    offset = 5000
     total_articles = 0
     total_citations = 0
     chunk_idx = -1
@@ -255,17 +276,17 @@ def main():
                 continue
             print(f'Processing chunk {chunk_idx}')
 
-            # all_data = process_chunk(metadata_chunk)
-            # articles, citation_data = all_data
+            all_data = process_chunk(metadata_chunk)
+            articles, citation_data = all_data
 
-            all_data = process_chunk_mp(metadata_chunk)
-            articles = []
-            citation_data = []
-            for elem in all_data:
-                if elem is None:
-                    continue
-                articles.append(elem[0])
-                citation_data.extend(elem[1])
+            # all_data = process_chunk_mp(metadata_chunk)
+            # articles = []
+            # citation_data = []
+            # for elem in all_data:
+            #     if elem is None:
+            #         continue
+            #     articles.append(elem[0])
+            #     citation_data.extend(elem[1])
 
             articles_writer.writerows(articles)
             citations_writer.writerows(citation_data)
@@ -276,8 +297,9 @@ def main():
 
             offset += CHUNK_SIZE
     except KeyboardInterrupt:
-        with AUTHOR_VOCAB_FILE.open('wb') as f:
-            pickle.dump(author_vocab, f)
+        # author_vocab_dct = {k: v for k, v in author_vocab.items()}
+        with AUTHOR_VOCAB_FILE.open('w') as f:
+            json.dump(author_vocab, f)
     finally:
         print(f"Done. Processed {total_articles} total articles with {total_citations} citations.")
         fp_articles.close()
