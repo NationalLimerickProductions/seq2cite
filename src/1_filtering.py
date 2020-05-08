@@ -142,7 +142,7 @@ def filter_authors(author_counts: dict,
 @utils.time_func
 def main():
     print("Loading data")
-    citations_context, token_vocab, title_vocab, author_vocab = load_data(subset=1000)
+    citations_context, token_vocab, title_vocab, author_vocab = load_data()
 
     print("Getting token counts")
     token_counts = count_occurrences(citations_context['context'].tolist())
