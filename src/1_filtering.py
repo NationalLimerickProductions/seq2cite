@@ -104,6 +104,41 @@ def apply_vocab(vocab_replacement_dict: dict, list_of_seqs: list) -> list:
     return res
 
 
+def filter_authors(author_counts: dict,
+                   author_replacement_dict: dict,
+                   list_of_authors: list,
+                   max_authors=5) -> list:
+    """Keep only the `max_authors` most common authors in each paper.
+
+    Parameters
+    ----------
+    author_counts: {dict} mapping old author IDs to counts
+    author_replacement_dict: {dict} mapping old author IDs to new author IDs
+    list_of_authors: {list} list of author sequences
+    max_authors: {int} default 5, max number of authors to keep
+
+    Returns
+    -------
+    'filtered_authors'
+    """
+    new2old = {v: k for k, v in author_replacement_dict.items()}
+
+    filtered_authors = []
+    for authors in list_of_authors:
+        auth_counts = []
+        for auth in authors:
+            if auth == UNK:
+                auth_counts.append(0)
+                continue
+            old_idx = new2old[auth]
+            auth_counts.append(author_counts[old_idx])
+
+        n_to_keep = min(max_authors, len(authors))
+        idx_to_keep = np.argsort(auth_counts)[-n_to_keep:]
+        filtered_authors.append([authors[idx] for idx in idx_to_keep])
+
+    return filtered_authors
+
 @utils.time_func
 def main():
     print("Loading data")
@@ -130,12 +165,16 @@ def main():
     print("Applying author vocab to authors")
     authors_replaced = apply_vocab(author_replacement_dict, citations_context['auth_idxs'].tolist())
 
+    print("Filtering authors")
+    authors_filtered = filter_authors(author_counts, author_replacement_dict, authors_replaced)
+
+
     citations_context['context'] = contexts_replaced
     citations_context['title_idxs'] = titles_replaced
-    citations_context['auth_idxs'] = authors_replaced
+    citations_context['auth_idxs'] = authors_filtered
 
     print("Saving")
-    citations_context.to_csv(config.final / 'cord19_data_clean.csv', header=False)
+    citations_context.to_csv(config.final / 'cord19_data_clean.csv', header=False, index=False)
     json.dump(token_vocab_new, (config.final / 'token_vocab.json').open('w'))
     json.dump(title_vocab_new, (config.final / 'title_vocab.json').open('w'))
     json.dump(author_vocab_new, (config.final / 'author_vocab.json').open('w'))

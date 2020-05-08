@@ -263,8 +263,8 @@ def get_citation_data(cord_uid: str, article: dict, citing_auth_idxs: list) -> l
 
 @utils.time_func
 def main():
-    CHUNK_SIZE = 1000
-    offset = 10000
+    CHUNK_SIZE = 10000
+    offset = 0
     total_articles = 0
     total_citations = 0
     chunk_idx = -1
