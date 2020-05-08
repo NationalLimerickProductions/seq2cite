@@ -5,6 +5,7 @@ root = Path(__file__).parent.parent.parent
 data = root / 'data'
 raw = data / 'raw'
 processed = data / 'processed'
+final = data / 'final'
 docs = root / 'docs'
 models = root / 'models'
 notebooks = root / 'notebooks'

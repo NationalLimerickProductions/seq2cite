@@ -85,58 +85,6 @@ def get_tarfile(tarfiles, subset, sha):
     return json.load(content.extractfile(member))
 
 
-def worker(row: namedtuple, author_vocab) -> Union[tuple, None]:
-    cord_uid = row['cord_uid']
-
-    sha = row['sha'].split('; ')[0]
-    title = row['title']
-    date = row['publish_time']
-    doi = row['doi']
-    journal = row['journal']
-    subset = row['full_text_file']
-
-    jsondict = aws.read_item(subset, sha)
-    if jsondict is None:
-        return
-    authors = jsondict['metadata'].get('authors')
-    auth_idxs = get_author_idxs(authors, author_vocab)
-    context_citations = get_citation_data(cord_uid, jsondict, auth_idxs)
-
-    article_data = (cord_uid, title, auth_idxs, date, journal, doi)
-
-    # chunk_processed[0] = chunk_processed[0] + 1
-    # sys.stdout.write(r'Articles processed: {}/{}'.format(chunk_info[0], chunk_info[1]))
-    # sys.stdout.flush()
-
-    return article_data, context_citations
-
-
-def process_chunk_mp(chunk: pd.DataFrame) -> list:
-    global chunk_info
-
-    chunk_info[0] = 0
-    chunk_info[1] = len(chunk)
-
-    print(f'Multiprocessing {len(chunk)} records with {mp.cpu_count()} workers...')
-    data = chunk.to_dict('records')
-    results = []
-
-    def collect_result(result):
-        sys.stdout.write(r'Articles processed: {}/{}'.format(chunk_info[0], chunk_info[1]))
-        sys.stdout.flush()
-        results.append(result)
-
-    # with mp.Pool(mp.cpu_count()) as pool:
-    pool = mp.Pool(mp.cpu_count())
-    for datum in data:
-        pool.apply_async(worker, args=(datum, author_vocab), callback=collect_result)
-
-    pool.close()
-    pool.join()
-
-    return results
-
-
 def process_chunk(chunk: pd.DataFrame, tarfiles: dict) -> tuple:
     """Steps in processing a chunk
 
@@ -162,8 +110,6 @@ def process_chunk(chunk: pd.DataFrame, tarfiles: dict) -> tuple:
         citation_data:
 
             (cord_uid, context, (cited_title, cited_authors, cited_date, cited_journal))
-
-    #TODO: Use multiprocessing
 
     :param chunk: Chunk of the metadata
     :return: 'articles', 'citation_data'
@@ -316,15 +262,6 @@ def main():
             all_data = process_chunk(metadata_chunk, tarfiles)
             articles, citation_data = all_data
 
-            # all_data = process_chunk_mp(metadata_chunk)
-            # articles = []
-            # citation_data = []
-            # for elem in all_data:
-            #     if elem is None:
-            #         continue
-            #     articles.append(elem[0])
-            #     citation_data.extend(elem[1])
-
             articles_writer.writerows(articles)
             citations_writer.writerows(citation_data)
 
@@ -334,13 +271,13 @@ def main():
 
             offset += CHUNK_SIZE
     except KeyboardInterrupt:
-        # author_vocab_dct = {k: v for k, v in author_vocab.items()}
-        with AUTHOR_VOCAB_FILE.open('w') as f:
-            json.dump(author_vocab, f)
+        pass
     finally:
         print(f"Done. Processed {total_articles} total articles with {total_citations} citations.")
         fp_articles.close()
         fp_citations.close()
+        with AUTHOR_VOCAB_FILE.open('w') as f:
+            json.dump(author_vocab, f)
 
 
 if __name__ == '__main__':
