@@ -19,17 +19,22 @@ import boto3
 from seq2cite import config, utils, aws, text
 
 
-CHUNK_SIZE = 256
+CHUNK_SIZE = 10000
 # Number of tokens surrounding the citation to take as context
 CONTEXT_SIZE = 30
-ARTICLES_FILE = config.raw / 'cord19_articles.csv'
-CITATIONS_FILE = config.raw / 'cord19_context_citations.csv'
-AUTHOR_VOCAB_FILE = config.raw / 'cord19_author_vocab.json'
+ARTICLES_FILE = config.processed / 'cord19_articles.csv'
+CITATIONS_FILE = config.processed / 'cord19_context_citations.csv'
+AUTHOR_VOCAB_FILE = config.processed / 'cord19_author_vocab.json'
 CITE_TOKEN = '<CITE>'
 CITE_IDX = text.nlp.vocab.strings[CITE_TOKEN]
 ARTICLES_NAMES = ['cord_uid', 'title', 'authors', 'date', 'journal', 'doi']
 CITATIONS_NAMES = ['citation_id', 'context', 'auth_idxs', 'citing_auth_idxs', 'title_idxs']
 MIN_DATE = pd.to_datetime('2010-01-01')
+KEYS = {'arxiv': '',
+        'noncomm_use_subset': '2020-04-10',
+        'biorxiv_medrxiv': '2020-04-17',
+        'custom_license': '2020-04-10',
+        'comm_use_subset': '2020-04-10'}
 
 
 # author_vocab = mp.Manager().dict()
@@ -41,11 +46,12 @@ def load_metadata(offset=0,
                   colnames=config.metadata_columns
                   ) -> Union[pd.DataFrame, None]:
     header = None if colnames is None else 0
-    df = pd.read_csv(f's3://{config.cord19_aws_bucket}/2020-04-10/metadata.csv',
+    df = pd.read_csv(config.raw / 'metadata.csv',
                      nrows=chunk_size,
                      skiprows=offset,
                      names=colnames,
-                     header=header)
+                     header=header,
+                     index_col=False)
     if len(df) == 0:
         return None
     df = df[~pd.isna(df['sha'])]
@@ -54,17 +60,14 @@ def load_metadata(offset=0,
 
 
 def load_tar_files():
-    s3 = boto3.client('s3')
-    keys = ['2020-04-10/noncomm_use_subset',
-            '2020-04-17/biorxiv_medrxiv.tar.gz',
-            '2020-04-10/custom_license.tar.gz',
-            '2020-04-10/comm_use_subset.tar.gz']
     res = {}
-    for key in keys:
+    for key, date_ in KEYS.items():
         print(f'Loading {key}')
-        keyfile = f'{key}.tar.gz'
-        result = aws.get_object(keyfile, s3=s3)
-        content = tarfile.open(fileobj=BytesIO(result['Body'].read()), mode="r:gz")
+        keyfile = config.raw / f'{key}.tar.gz'
+        try:
+            content = tarfile.open(keyfile, mode="r:gz")
+        except tarfile.ReadError:
+            content = tarfile.open(keyfile)
         members = content.getmembers()
         member_dict = {m.name.split('/')[-1].rstrip('.json'): m for m in members}
         res[key] = {}
@@ -74,8 +77,11 @@ def load_tar_files():
 
 
 def get_tarfile(tarfiles, subset, sha):
+    tar_subset = tarfiles.get(subset, None)
+    if tar_subset is None:
+        return
     content = tarfiles[subset]['tarfile']
-    member = tarfiles[subset][sha]
+    member = tarfiles[subset]['members'][sha]
     return json.load(content.extractfile(member))
 
 
@@ -175,7 +181,7 @@ def process_chunk(chunk: pd.DataFrame, tarfiles: dict) -> tuple:
             date = row.publish_time
             doi = row.doi
             journal = row.journal
-            subset = row.full_text_file
+            subset = row.url
 
             jsondict = get_tarfile(tarfiles, subset, sha)
             if jsondict is None:
@@ -279,7 +285,7 @@ def get_citation_data(cord_uid: str, article: dict, citing_auth_idxs: list) -> l
 @utils.time_func
 def main():
     # Good headstart to get to 2010
-    offset = 5000
+    offset = 0
     total_articles = 0
     total_citations = 0
     chunk_idx = -1
@@ -303,7 +309,7 @@ def main():
             if metadata_chunk is None:
                 break
             if len(metadata_chunk) == 0:
-                print(f'Skipping chunk {chunk_idx} with length 0')
+                # print(f'Skipping chunk {chunk_idx} with length 0')
                 continue
             print(f'Processing chunk {chunk_idx}')
 
