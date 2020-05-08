@@ -19,14 +19,15 @@ import boto3
 from seq2cite import config, utils, aws, text
 
 
-CHUNK_SIZE = 10000
 # Number of tokens surrounding the citation to take as context
 CONTEXT_SIZE = 30
 ARTICLES_FILE = config.processed / 'cord19_articles.csv'
 CITATIONS_FILE = config.processed / 'cord19_context_citations.csv'
 AUTHOR_VOCAB_FILE = config.processed / 'cord19_author_vocab.json'
+TOKEN_VOCAB_FILE = config.processed / 'cord19_token_vocab.json'
+TITLE_VOCAB_FILE = config.processed / 'cord19_title_vocab.json'
 CITE_TOKEN = '<CITE>'
-CITE_IDX = text.nlp.vocab.strings[CITE_TOKEN]
+CITE_IDX = 1
 ARTICLES_NAMES = ['cord_uid', 'title', 'authors', 'date', 'journal', 'doi']
 CITATIONS_NAMES = ['citation_id', 'context', 'auth_idxs', 'citing_auth_idxs', 'title_idxs']
 MIN_DATE = pd.to_datetime('2010-01-01')
@@ -36,13 +37,16 @@ KEYS = {'arxiv': '',
         'custom_license': '2020-04-10',
         'comm_use_subset': '2020-04-10'}
 
+author_vocab = {'<UNK>': 0, '<PAD>': 9999999}
+token_vocab = {'<UNK>': 0, '<CITE>': 1, '<PAD>': 9999999}
+title_vocab = {'<UNK>': 0, '<CITE>': 1, '<PAD>': 9999999}
+curr_author_idx = 1
+curr_token_idx = 2
+curr_title_idx = 2
 
-# author_vocab = mp.Manager().dict()
-# chunk_info = mp.Manager().list([0, 0])
-author_vocab = dict()
 
 def load_metadata(offset=0,
-                  chunk_size=CHUNK_SIZE,
+                  chunk_size=None,
                   colnames=config.metadata_columns
                   ) -> Union[pd.DataFrame, None]:
     header = None if colnames is None else 0
@@ -101,21 +105,11 @@ def process_chunk(chunk: pd.DataFrame, tarfiles: dict) -> tuple:
 
             (cord_uid, context, (cited_title, cited_authors, cited_date, cited_journal))
 
-    2. Returns a tuple of articles, citation_data, with the following formats
-
-        articles:
-
-            (cord_uid, title, authors, date, journal, doi)
-
-        citation_data:
-
-            (cord_uid, context, (cited_title, cited_authors, cited_date, cited_journal))
+    2. Returns a tuple of articles, citation_data
 
     :param chunk: Chunk of the metadata
     :return: 'articles', 'citation_data'
     """
-    global author_vocab
-
     articles = []
     citation_data = []
     with tqdm(total=len(chunk)) as pbar:
@@ -166,6 +160,45 @@ def get_author_idxs(authors: list) -> list:
     return auth_idxs
 
 
+def get_token_idx(token: str) -> int:
+    """Get the token id for a given token, adding it to the vocab if necessary.
+
+    Parameters
+    ----------
+    token {str} -- Token to add to the vocab
+
+    Returns
+    -------
+    'id' {int}
+    """
+    global curr_token_idx, token_vocab
+
+    if token not in token_vocab:
+        token_vocab[token] = curr_token_idx
+        curr_token_idx += 1
+    return token_vocab[token]
+
+
+def get_title_idx(token: str) -> int:
+    """Get the token id for a given title token, adding it to the vocab
+    if necessary.
+
+    Parameters
+    ----------
+    token {str} -- Token to add to the vocab
+
+    Returns
+    -------
+    'id' {int}
+    """
+    global curr_title_idx, title_vocab
+
+    if token not in title_vocab:
+        title_vocab[token] = curr_title_idx
+        curr_title_idx += 1
+    return title_vocab[token]
+
+
 def get_citation_data(cord_uid: str, article: dict, citing_auth_idxs: list) -> list:
     """Get the citation data for a given article (in dict format)
 
@@ -195,7 +228,7 @@ def get_citation_data(cord_uid: str, article: dict, citing_auth_idxs: list) -> l
             authors = bibref['authors']
             auth_idxs = get_author_idxs(authors)
             title = bibref['title']
-            title_idxs = [t.lemma for t in text.nlp(title)]
+            title_idxs = [get_title_idx(t.lemma_) for t in text.nlp(title)]
 
             # Finding the context
             cite_start = cite_span['start']
@@ -216,8 +249,8 @@ def get_citation_data(cord_uid: str, article: dict, citing_auth_idxs: list) -> l
                 context_size_post = sent_len - idx_end
 
             # Getting the context
-            context_pre = list([t.idx for t in text_section[idx_start - context_size_pre:idx_start]])
-            context_post = list([t.idx for t in text_section[idx_end:idx_end + context_size_post]])
+            context_pre = list([get_token_idx(t.lemma_) for t in text_section[idx_start - context_size_pre:idx_start]])
+            context_post = list([get_token_idx(t.lemma_) for t in text_section[idx_end:idx_end + context_size_post]])
             context = context_pre + [CITE_IDX] + context_post
 
             # Packaging it all together
@@ -230,8 +263,8 @@ def get_citation_data(cord_uid: str, article: dict, citing_auth_idxs: list) -> l
 
 @utils.time_func
 def main():
-    # Good headstart to get to 2010
-    offset = 0
+    CHUNK_SIZE = 1000
+    offset = 10000
     total_articles = 0
     total_citations = 0
     chunk_idx = -1
@@ -250,7 +283,7 @@ def main():
     print("Beginning processing")
     try:
         while True:
-            metadata_chunk = load_metadata(offset, CHUNK_SIZE)
+            metadata_chunk = load_metadata(offset, chunk_size=CHUNK_SIZE)
             chunk_idx += 1
             if metadata_chunk is None:
                 break
@@ -258,7 +291,6 @@ def main():
                 # print(f'Skipping chunk {chunk_idx} with length 0')
                 continue
             print(f'Processing chunk {chunk_idx}')
-
             all_data = process_chunk(metadata_chunk, tarfiles)
             articles, citation_data = all_data
 
@@ -276,8 +308,12 @@ def main():
         print(f"Done. Processed {total_articles} total articles with {total_citations} citations.")
         fp_articles.close()
         fp_citations.close()
-        with AUTHOR_VOCAB_FILE.open('w') as f:
-            json.dump(author_vocab, f)
+
+        for vocab, file in zip((author_vocab, token_vocab, title_vocab),
+                               (AUTHOR_VOCAB_FILE, TOKEN_VOCAB_FILE, TITLE_VOCAB_FILE)):
+            idx2vocab = {v: k for k, v in vocab.items()}
+            with file.open('w') as f:
+                json.dump(idx2vocab, f)
 
 
 if __name__ == '__main__':
