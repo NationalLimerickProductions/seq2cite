@@ -1,4 +1,5 @@
 from time import time
+from operator import itemgetter
 
 from IPython.display import display
 import pandas as pd
@@ -35,3 +36,19 @@ def time_func(func):
         print(f'Time elapsed: {end - start} seconds.')
         return res
     return f
+
+
+def keep_nlargest(dct: dict, n: int) -> dict:
+    """Return a dict with only the n-largest elements in `dct` (by value)
+
+    Parameters
+    ----------
+    dct: dict
+    n: int.
+
+    Returns
+    -------
+    'n_largest': dict.
+    """
+    res = dict(sorted(dct.items(), key=itemgetter(1), reverse=True)[:n])
+    return res
