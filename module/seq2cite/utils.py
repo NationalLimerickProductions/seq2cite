@@ -83,6 +83,10 @@ def load_vocab(vocab_file: Union[PosixPath, str]) -> dict:
 def load_data(data_file: Union[PosixPath, str], nrows=None) -> list:
     """Load the data file (context and citations), preprocessing as necessary
 
+    Example usage:
+
+        data = load_data(config.final / 'cord19_data_clean.csv')
+
 
     Parameters
     ----------
