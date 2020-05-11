@@ -4,9 +4,9 @@ from typing import Union
 import requests
 import pandas as pd
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ReadTimeoutError
 
-from . import config, utils
+from . import config
 
 
 def connect_aws_s3():
@@ -24,6 +24,12 @@ def get_cord19_bucket(s3=None, s3_resource=None):
         'Must provide both or neither of s3 and s3_resource'
 
     return s3_resource.Bucket(config.cord19_aws_bucket)
+
+
+def get_object(key, s3=None):
+    if s3 is None:
+        s3 = boto3.client('s3')
+    return s3.get_object(Bucket=config.cord19_aws_bucket, Key=key)
 
 
 def read_item(subset: str, id_: str, date='2020-04-17', s3=None) -> Union[dict, None]:
@@ -51,3 +57,6 @@ def read_item(subset: str, id_: str, date='2020-04-17', s3=None) -> Union[dict, 
             print(f'No such key: {key}')
         else:
             raise
+    except ReadTimeoutError:
+        print(f'Error reading file {key}')
+        return None
