@@ -16,8 +16,9 @@ from seq2cite import config, utils
 
 UNK = 0
 CITE = 1
-PAD_TOKEN = 9999999
-N_TO_KEEP = 20000
+N_TO_KEEP_TOKEN = 20000
+N_TO_KEEP_TITLE = 20000
+N_TO_KEEP_AUTHORS = 100000
 
 
 def load_data(subset=None) -> tuple:
@@ -27,7 +28,7 @@ def load_data(subset=None) -> tuple:
     'citations_context', 'author_vocab'
     """
     citations_context = pd.read_csv(config.processed / 'cord19_context_citations.csv', nrows=subset)
-    for col in ["context", "auth_idxs", "title_idxs"]:
+    for col in ["context", "auth_idxs", "title_idxs", 'citing_auth_idxs']:
         citations_context[col] = citations_context[col].apply(ast.literal_eval)
     token_vocab = json.load((config.processed / 'cord19_token_vocab.json').open('r'))
     title_vocab = json.load((config.processed / 'cord19_title_vocab.json').open('r'))
@@ -54,7 +55,7 @@ def count_occurrences(list_of_seqs: list) -> dict:
     return token_counts
 
 
-def prepare_vocab(counts: dict, vocab: dict, include_cite=True) -> tuple:
+def prepare_vocab(counts: dict, vocab: dict, n_to_keep: int, include_cite=True) -> tuple:
     """Convert the existing author vocab to two dicts: one mapping the original
     IDs to the new IDs and the other mapping new IDs to the author strings.
 
@@ -62,20 +63,21 @@ def prepare_vocab(counts: dict, vocab: dict, include_cite=True) -> tuple:
     ----------
     counts: {dict} Counts of each author (keys are IDs)
     vocab: {dict} Dict mapping author IDs to strings
+    n_to_keep: {int} Number of tokens to keep before marking the others as <UNK>
     include_cite: {bool} Whether to include the <CITE> token in the new vocab
 
     Returns
     -------
     'vocab_new', 'replacement_dict'
     """
-    vocab_new, replacement_dict = {UNK: '<UNK>', PAD_TOKEN: '<PAD>'}, {}
+    vocab_new, replacement_dict = {UNK: '<UNK>'}, {}
     if include_cite:
         vocab_new[CITE] = '<CITE>'
 
-    vocab_largest = utils.keep_nlargest(counts, N_TO_KEEP)
+    vocab_largest = utils.keep_nlargest(counts, n_to_keep)
     for i, idx_old in tqdm(list(enumerate(vocab_largest))):
-        # Account for UNK and CITE, which is idx 0
-        idx_new = i + 2
+        # Subtract 1 because pad token is way out
+        idx_new = len(vocab_new)
         replacement_dict[idx_old] = idx_new
         string = vocab[f"{idx_old}"]
         vocab_new[idx_new] = string
@@ -149,29 +151,39 @@ def main():
     print("Getting title counts")
     title_counts = count_occurrences(citations_context['title_idxs'].tolist())
     print("Getting author counts")
-    author_counts = count_occurrences(citations_context['auth_idxs'].tolist())
+    author_counts = count_occurrences(citations_context['auth_idxs'].tolist() + citations_context['citing_auth_idxs'])
 
     print("Preparing token vocab")
-    token_replacement_dict, token_vocab_new = prepare_vocab(token_counts, token_vocab)
+    token_replacement_dict, token_vocab_new = prepare_vocab(token_counts, token_vocab, N_TO_KEEP_TOKEN)
     print("Preparing title vocab")
-    title_replacement_dict, title_vocab_new = prepare_vocab(title_counts, title_vocab)
+    title_replacement_dict, title_vocab_new = prepare_vocab(title_counts, title_vocab, N_TO_KEEP_TITLE)
     print("Preparing author vocab")
-    author_replacement_dict, author_vocab_new = prepare_vocab(author_counts, author_vocab, include_cite=False)
+    author_replacement_dict, author_vocab_new = prepare_vocab(author_counts, author_vocab, N_TO_KEEP_AUTHORS, include_cite=False)
 
     print("Applying vocab to contexts")
     contexts_replaced = apply_vocab(token_replacement_dict, citations_context['context'].tolist())
     print("Applying vocab to titles")
     titles_replaced = apply_vocab(title_replacement_dict, citations_context['title_idxs'].tolist())
-    print("Applying author vocab to authors")
+    print("Applying author vocab to cited authors")
     authors_replaced = apply_vocab(author_replacement_dict, citations_context['auth_idxs'].tolist())
+    print("Applying author vocab to citing authors")
+    citing_authors_replaced = apply_vocab(author_replacement_dict, citations_context['citing_auth_idxs'].tolist())
 
-    print("Filtering authors")
+    print("Filtering cited authors")
     authors_filtered = filter_authors(author_counts, author_replacement_dict, authors_replaced)
-
+    print("Fitlering citing authors")
+    citing_authors_filtered = filter_authors(author_counts, author_replacement_dict, citing_authors_replaced)
 
     citations_context['context'] = contexts_replaced
     citations_context['title_idxs'] = titles_replaced
     citations_context['auth_idxs'] = authors_filtered
+    citations_context['citing_auth_idxs'] = citing_authors_filtered
+
+    # Switching vocabs so that they go {token: idx}
+    print("Reversing vocabs")
+    token_vocab_new = {t: i for i, t in token_vocab_new.items()}
+    title_vocab_new = {t: i for i, t in title_vocab_new.items()}
+    author_vocab_new = {t: i for i, t in author_vocab_new.items()}
 
     print("Saving")
     citations_context.to_csv(config.final / 'cord19_data_clean.csv', header=False, index=False)

@@ -37,12 +37,9 @@ KEYS = {'arxiv': '',
         'custom_license': '2020-04-10',
         'comm_use_subset': '2020-04-10'}
 
-author_vocab = {'<UNK>': 0, '<PAD>': 9999999}
-token_vocab = {'<UNK>': 0, '<CITE>': 1, '<PAD>': 9999999}
-title_vocab = {'<UNK>': 0, '<CITE>': 1, '<PAD>': 9999999}
-curr_author_idx = 1
-curr_token_idx = 2
-curr_title_idx = 2
+author_vocab = {'<UNK>': 0}
+token_vocab = {'<UNK>': 0, '<CITE>': 1}
+title_vocab = {'<UNK>': 0, '<CITE>': 1}
 
 
 def load_metadata(offset=0,
