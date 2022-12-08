@@ -2,7 +2,7 @@ awscli==1.18.44
 blis==0.4.1
 botocore==1.15.44
 catalogue==1.0.0
-certifi==2020.4.5.1
+certifi==2022.12.7
 chardet==3.0.4
 colorama==0.4.3
 conllu==2.3.2
